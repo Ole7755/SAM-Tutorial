@@ -1,279 +1,307 @@
-# SAM对抗攻击研究项目
+# SAM Adversarial Attack Research
 
 ## 项目概述
 
-本项目旨在系统性研究Segment Anything Model (SAM)在对抗攻击下的鲁棒性，探索不同攻击策略对SAM分割性能的影响，为提升视觉基础模型的安全性提供实证研究。
+本项目旨在系统性研究Segment Anything Model (SAM)在对抗攻击下的鲁棒性，探索不同攻击方法对SAM分割能力的影响。
+
+**核心研究问题**：能否通过对抗扰动让SAM "Segment Nothing"？
 
 ---
 
 ## 研究目标
 
 ### 主要目标
-使SAM模型在对抗样本输入下产生**"Segment Nothing"**效果，即：
-- 输入干净图像 + 提示 → 正确分割目标对象
-- 输入对抗样本 + 相同提示 → 输出空mask或极小区域
+让SAM在接收对抗样本后产生错误的分割结果，具体表现为：
+- 生成空mask（无分割区域）
+- 生成极小分割区域
+- 质量分数显著下降
+- 分割结果与真实目标严重偏离
 
-### 科学问题
-1. SAM对图像层面的对抗扰动有多脆弱？
-2. 不同损失函数设计对攻击效果的影响？
-3. FGSM vs PGD：哪种攻击方法对SAM更有效？
-4. 扰动预算（ε）与攻击成功率的关系？
-
----
-
-## 攻击方案设计
-
-### 1. 攻击配置
-- **攻击对象**: 输入图像
-- **攻击类型**: Untargeted（无目标攻击）
-- **攻击目标**: Segment Nothing
-- **提示类型**: 单点提示（Point Prompt）
-
-### 2. 攻击方法
-
-#### FGSM (Fast Gradient Sign Method)
-```
-x_adv = x + ε · sign(∇_x L(x, y))
-```
-- 单步攻击
-- 快速生成对抗样本
-- 参数: ε ∈ {4/255, 8/255, 16/255}
-
-#### PGD (Projected Gradient Descent)
-```
-x_adv^(t+1) = Proj_{x+S} (x_adv^(t) + α · sign(∇_x L(x_adv^(t), y)))
-```
-- 迭代攻击，更强大
-- 多步优化对抗扰动
-- 参数: 
-  - ε = 8/255 (总预算)
-  - α = 2/255 (步长)
-  - steps ∈ {7, 10, 20}
-
-### 3. 损失函数设计
-
-本项目将系统评估4种损失函数：
-
-#### Loss 1: 最小化Mask面积
-```python
-L_area = Σ sigmoid(logits_i,j)
-```
-- **直觉**: 让mask中的像素激活值尽可能小
-- **优势**: 直接优化"segment nothing"目标
-- **预期**: 最直接有效
-
-#### Loss 2: 最小化质量分数
-```python
-L_quality = predicted_iou_score
-```
-- **直觉**: 让SAM自己判断分割质量很差
-- **优势**: 利用SAM的内部质量评估机制
-- **预期**: 可能导致低质量但非空的mask
-
-#### Loss 3: 反转分割目标（BCE）
-```python
-L_BCE = BCE(sigmoid(logits), zeros_like(target))
-```
-- **直觉**: 强制让所有像素预测为背景
-- **优势**: 明确的监督信号
-- **预期**: 稳定但可能需要更大ε
-
-#### Loss 4: 组合损失
-```python
-L_combined = α · L_area + β · (-L_quality)
-α = 0.7, β = 0.3
-```
-- **直觉**: 同时优化mask面积和质量分数
-- **优势**: 多目标优化，更鲁棒
-- **预期**: 平衡效果，可能最优
-
----
-
-## 评估指标体系
-
-### 主要指标
-
-#### 1. Mask面积比 (Mask Area Ratio)
-```
-MAR = Area(adv_mask) / Area(clean_mask)
-```
-- 范围: [0, +∞)
-- **攻击成功**: MAR < 0.1 (对抗mask面积 < 10%原始面积)
-
-#### 2. IoU (Intersection over Union)
-```
-IoU = |adv_mask ∩ clean_mask| / |adv_mask ∪ clean_mask|
-```
-- 范围: [0, 1]
-- **攻击成功**: IoU < 0.3
-
-#### 3. 质量分数下降 (Quality Score Drop)
-```
-QSD = clean_score - adv_score
-```
-- 范围: [-1, 1]
-- **攻击成功**: QSD > 0.5
-
-### 辅助指标
-
-#### 4. 扰动大小
-```
-L_∞ = max|x_adv - x|
-L_2 = ||x_adv - x||_2
-```
-
-#### 5. PSNR (Peak Signal-to-Noise Ratio)
-```
-PSNR = 20 · log10(MAX_I / sqrt(MSE))
-```
-- 衡量图像视觉质量
-
-#### 6. 攻击成功率 (ASR)
-```
-ASR = #{攻击成功样本} / #{总样本}
-```
-- 综合判定标准：MAR < 0.1 OR IoU < 0.3
+### 研究意义
+1. **安全性评估**：评估SAM在对抗环境下的可靠性
+2. **鲁棒性分析**：识别SAM的脆弱点
+3. **防御启发**：为未来的防御机制提供insights
+4. **理论贡献**：探索视觉基础模型的对抗特性
 
 ---
 
 ## 实验设计
 
-### 实验矩阵
+### 攻击配置
 
-| 攻击方法 | 损失函数 | ε值 | 迭代步数 | 总实验数 |
-|---------|---------|-----|---------|---------|
-| FGSM    | Loss 1-4 | 4/255, 8/255, 16/255 | - | 12 |
-| PGD     | Loss 1-4 | 8/255 | 7, 10, 20 | 12 |
-| **总计** | - | - | - | **24** |
+#### 攻击对象
+- **目标模型**：SAM (ViT-L)
+- **攻击目标**：图像输入（固定prompt不变）
+- **攻击类型**：Untargeted Attack
+- **期望结果**：Segment Nothing
 
-### 实验流程
+#### 提示配置
+- **提示类型**：单点提示（Point Prompt）
+- **提示位置**：目标对象中心（如猫的鼻子）
+- **标签**：前景点（label=1）
+
+#### 测试图像
+- **主要测试图像**：`cat.png` - 蓝色背景猫咪照片
+- **图像特点**：背景简洁、主体清晰、适合基准测试
+
+---
+
+## 攻击方法
+
+### 1. FGSM (Fast Gradient Sign Method)
+**原理**：单步梯度符号攻击
+```
+perturbation = epsilon * sign(∇_x Loss)
+adv_image = clean_image + perturbation
+```
+
+**参数设置**：
+- `epsilon`: [4/255, 8/255, 16/255]
+
+### 2. PGD (Projected Gradient Descent)
+**原理**：多步迭代优化攻击
+```
+for t in 1..T:
+    perturbation_t = alpha * sign(∇_x Loss)
+    adv_image = clip(adv_image + perturbation_t, [x-epsilon, x+epsilon])
+```
+
+**参数设置**：
+- `epsilon`: 8/255
+- `alpha`: 2/255
+- `steps`: [7, 10, 20]
+
+### 3. 未来扩展方法
+- C&W Attack
+- DeepFool
+- AutoAttack
+- 其他白盒/黑盒攻击
+
+---
+
+## 损失函数设计
+
+针对"Segment Nothing"目标，我们设计并对比以下四种损失函数：
+
+### Loss 1: 最小化Mask面积
+```python
+loss = torch.sigmoid(logits).sum()
+```
+**直觉**：直接最小化mask中激活像素的数量
+
+### Loss 2: 最小化质量分数
+```python
+loss = predicted_iou_score
+```
+**直觉**：利用SAM自身的质量评估，让模型认为分割质量很差
+
+### Loss 3: 反转分割目标（BCE）
+```python
+target = torch.zeros_like(clean_mask)
+loss = F.binary_cross_entropy_with_logits(logits, target)
+```
+**直觉**：显式地将目标设为空mask
+
+### Loss 4: 组合损失
+```python
+loss = alpha * torch.sigmoid(logits).sum() + beta * (-predicted_iou_score)
+```
+**直觉**：同时优化mask面积和质量分数
+- `alpha`: 1.0
+- `beta`: 10.0
+
+---
+
+## 评估指标
+
+### 主要指标
+
+#### 1. Mask Area Ratio (MAR)
+```
+MAR = Area(adv_mask) / Area(clean_mask)
+```
+- **成功标准**：MAR < 0.1（对抗mask面积不到干净mask的10%）
+- **理想值**：接近0
+
+#### 2. Intersection over Union (IoU)
+```
+IoU = |clean_mask ∩ adv_mask| / |clean_mask ∪ adv_mask|
+```
+- **成功标准**：IoU < 0.3
+- **理想值**：接近0
+
+#### 3. Quality Score Drop (QSD)
+```
+QSD = clean_score - adv_score
+```
+- **成功标准**：QSD > 0.5
+- **理想值**：接近1.0
+
+### 扰动指标
+
+#### 4. L∞ Norm
+```
+L∞ = max|adv_image - clean_image|
+```
+- **约束**：≤ epsilon
+
+#### 5. L2 Norm
+```
+L2 = ||adv_image - clean_image||_2
+```
+- **指标**：越小越好（在满足攻击成功的前提下）
+
+### 成功率指标
+
+#### 6. Attack Success Rate (ASR)
+```
+ASR = (攻击成功样本数 / 总样本数) × 100%
+```
+**攻击成功定义**：MAR < 0.1 OR IoU < 0.3
+
+---
+
+## 实验流程
 
 ```
-1. Baseline建立
-   ├─ 加载SAM模型 (ViT-L)
-   ├─ 读取测试图像 (cat.png)
-   ├─ 定义点提示坐标
-   └─ 生成clean mask和score
+1. 环境准备
+   ├── 加载SAM模型（ViT-L）
+   ├── 加载测试图像
+   └── 设置实验参数
 
-2. FGSM攻击实验 (12组)
-   ├─ Loss 1 × ε ∈ {4/255, 8/255, 16/255}
-   ├─ Loss 2 × ε ∈ {4/255, 8/255, 16/255}
-   ├─ Loss 3 × ε ∈ {4/255, 8/255, 16/255}
-   └─ Loss 4 × ε ∈ {4/255, 8/255, 16/255}
+2. Baseline建立
+   ├── 干净图像 + 点提示 → 分割结果
+   ├── 记录clean_mask, clean_score
+   └── 可视化baseline
 
-3. PGD攻击实验 (12组)
-   ├─ Loss 1 × steps ∈ {7, 10, 20}
-   ├─ Loss 2 × steps ∈ {7, 10, 20}
-   ├─ Loss 3 × steps ∈ {7, 10, 20}
-   └─ Loss 4 × steps ∈ {7, 10, 20}
+3. FGSM攻击实验
+   ├── 遍历4种损失函数
+   ├── 遍历3种epsilon值
+   ├── 生成对抗样本
+   ├── 评估攻击效果
+   └── 记录所有指标
 
-4. 结果分析
-   ├─ 定量对比（24组实验 × 6个指标）
-   ├─ 可视化对比（对抗样本、mask对比、扰动可视化）
-   └─ 统计分析（最佳攻击策略）
+4. PGD攻击实验
+   ├── 遍历4种损失函数
+   ├── 遍历3种steps值
+   ├── 迭代生成对抗样本
+   ├── 评估攻击效果
+   └── 记录所有指标
+
+5. 结果分析
+   ├── 对比不同损失函数效果
+   ├── 对比FGSM vs PGD
+   ├── 分析攻击成功率
+   ├── 可视化对比图
+   └── 生成实验报告
+
+6. 最佳方法识别
+   └── 综合评估确定最优攻击配置
 ```
 
 ---
 
-## 预期成果
+## 预期输出
 
-### 1. 实验报告
-- 24组实验的详细数据表格
-- 不同损失函数的效果对比
-- FGSM vs PGD的性能分析
-- 扰动预算的影响分析
+### 1. 量化结果表格
+```
+| Method | Loss Type | Epsilon/Steps | MAR↓ | IoU↓ | QSD↑ | L∞ | ASR↑ |
+|--------|-----------|---------------|------|------|------|-----|------|
+| FGSM   | Loss1     | 8/255         | ...  | ...  | ...  | ... | ...  |
+| ...    | ...       | ...           | ...  | ...  | ...  | ... | ...  |
+```
 
 ### 2. 可视化结果
-- 对抗样本vs干净样本
-- Mask对比图（24组）
-- 扰动可视化（放大查看）
-- 指标曲线图（ε vs ASR, steps vs IoU等）
+- 干净图像 vs 对抗图像
+- 干净mask vs 对抗mask
+- 扰动可视化（perturbation heatmap）
+- 不同方法效果对比图
 
-### 3. 关键发现
-- **最优攻击策略**: 最有效的损失函数 + 攻击方法组合
-- **鲁棒性分析**: SAM对哪种攻击最脆弱
-- **扰动效率**: 达到攻击目标所需的最小ε
+### 3. 实验报告
+- 最佳攻击方法及其参数
+- 不同损失函数的优劣分析
+- FGSM vs PGD的对比结论
+- 未来研究方向建议
 
 ---
 
-## 项目结构
+## 文件结构
 
 ```
 SAM-Tutorial/
-├── README.md
-├── PROJECT_GOALS.md                 # 本文档
-├── requirements.txt
-├── data/
-│   └── cat.png                      # 测试图像
-├── weights/
-│   └── sam_vit_l_0b3195.pth        # SAM权重
-├── src/
-│   ├── __init__.py
-│   ├── attack.py                    # 攻击算法实现
-│   ├── loss_functions.py            # 4种损失函数
-│   ├── evaluate.py                  # 评估指标计算
-│   └── visualize.py                 # 可视化工具
-├── experiments/
-│   ├── run_fgsm_attacks.py         # FGSM实验脚本
-│   ├── run_pgd_attacks.py          # PGD实验脚本
-│   └── run_all_experiments.py      # 完整实验流程
-├── results/
-│   ├── fgsm/                        # FGSM结果
-│   ├── pgd/                         # PGD结果
-│   ├── metrics.csv                  # 数据汇总
-│   └── visualizations/              # 可视化结果
-└── analysis/
-    ├── compare_losses.py            # 损失函数对比分析
-    ├── compare_methods.py           # 方法对比分析
-    └── generate_report.py           # 自动生成实验报告
+├── README.md                          # 本文档
+├── requirements.txt                   # 依赖包
+├── sam_vit_l_0b3195.pth              # 模型权重
+├── cat.png                            # 测试图像
+│
+├── tutorials/                         # 基础教程
+│   ├── sam_tutorial.py               # SAM使用教程
+│   └── sam_interactive.py            # 交互式工具
+│
+├── attacks/                           # 攻击代码
+│   ├── fgsm_attack.py                # FGSM实现
+│   ├── pgd_attack.py                 # PGD实现
+│   ├── loss_functions.py             # 4种损失函数
+│   └── attack_utils.py               # 工具函数
+│
+├── experiments/                       # 实验脚本
+│   ├── run_experiments.py            # 完整实验流程
+│   ├── evaluate.py                   # 评估指标计算
+│   └── visualize.py                  # 结果可视化
+│
+├── results/                           # 实验结果
+│   ├── figures/                      # 可视化图片
+│   ├── logs/                         # 实验日志
+│   └── report.md                     # 实验报告
+│
+└── notebooks/                         # Jupyter notebooks（可选）
+    └── analysis.ipynb                # 交互式分析
 ```
 
 ---
 
-## 后续扩展方向
+## 下一步工作
 
-### Phase 2: 提示攻击
-- 攻击点坐标（微小扰动）
-- 攻击边界框坐标
-- 攻击多点提示
+### Phase 1: 实现核心攻击框架 ✅ (当前)
+- [x] 项目规划和文档
+- [ ] 实现4种损失函数
+- [ ] 实现FGSM攻击
+- [ ] 实现PGD攻击
+- [ ] 实现评估指标
 
-### Phase 3: 更多攻击方法
-- C&W (Carlini & Wagner)
-- AutoAttack
-- DeepFool
-- Universal Adversarial Perturbations
+### Phase 2: 完整实验和分析
+- [ ] 运行所有实验配置
+- [ ] 收集和整理数据
+- [ ] 生成可视化结果
+- [ ] 撰写实验报告
+- [ ] 识别最佳攻击方法
 
-### Phase 4: 防御机制
-- 对抗训练
-- 输入预处理（去噪、压缩）
-- 集成防御
-
-### Phase 5: 迁移性研究
-- 对抗样本在不同SAM模型间的迁移 (ViT-B, ViT-L, ViT-H)
-- 对其他分割模型的迁移 (Mask R-CNN, DeepLab等)
-
----
-
-## 时间规划
-
-- **Week 1**: 完成FGSM和PGD的4种损失函数实现
-- **Week 2**: 运行全部24组实验，收集数据
-- **Week 3**: 数据分析和可视化
-- **Week 4**: 撰写实验报告，确定最优策略
+### Phase 3: 扩展研究（可选）
+- [ ] 测试更多图像
+- [ ] 实现其他攻击方法（C&W, DeepFool等）
+- [ ] 测试其他提示类型（box, multi-point）
+- [ ] 研究防御方法
+- [ ] 撰写学术论文
 
 ---
 
 ## 参考文献
 
-1. Kirillov et al. "Segment Anything." ICCV 2023.
-2. Goodfellow et al. "Explaining and Harnessing Adversarial Examples." ICLR 2015.
-3. Madry et al. "Towards Deep Learning Models Resistant to Adversarial Attacks." ICLR 2018.
+### SAM相关
+- Kirillov et al. "Segment Anything." ICCV 2023.
+
+### 对抗攻击相关
+- Goodfellow et al. "Explaining and Harnessing Adversarial Examples." ICLR 2015. (FGSM)
+- Madry et al. "Towards Deep Learning Models Resistant to Adversarial Attacks." ICLR 2018. (PGD)
 
 ---
 
-## 联系与贡献
+## 联系方式
 
-本项目为AI安全研究项目，欢迎交流和贡献。
+**研究者**：Ole
+**研究方向**：Adversarial Attacks on Vision Models
+**项目仓库**：https://github.com/Ole7755/SAM-Tutorial.git
 
-**核心研究问题**: 如何让SAM "Segment Nothing"？哪种攻击策略最有效？
+---
 
+**最后更新**：2025-10-16
