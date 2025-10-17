@@ -98,7 +98,7 @@ class LossFunction:
         直觉: 让mask中的激活像素尽可能少
         """
         mask_probs = torch.sigmoid(logits)
-        loss = mask_probs.sum()
+        loss = -mask_probs.sum()
         return loss
 
     @staticmethod
@@ -109,7 +109,7 @@ class LossFunction:
         """
         if scores is None:
             return torch.tensor(0.0, device=logits.device)
-        loss = scores.mean()
+        loss = -scores.mean()
         return loss
 
     @staticmethod
@@ -119,7 +119,7 @@ class LossFunction:
         直觉: 显式地将目标设为全0 mask
         """
         target = torch.zeros_like(logits)
-        loss = F.binary_cross_entropy_with_logits(logits, target)
+        loss = -F.binary_cross_entropy_with_logits(logits, target, reduction="mean")
         return loss
 
     @staticmethod
@@ -130,7 +130,7 @@ class LossFunction:
         """
         area_loss = torch.sigmoid(logits).sum()
         score_loss = scores.mean() if scores is not None else 0
-        loss = alpha * area_loss + beta * score_loss
+        loss = -(alpha * area_loss + beta * score_loss)
         return loss
 
 
@@ -310,7 +310,7 @@ class SAMAttacker:
             )
             scores_np = iou_predictions.squeeze(0).cpu().numpy()
 
-        return masks_np[0], scores_np[0], logits_tensor[0], scores_tensor
+        return masks_np[0], scores_np[0], logits_tensor[0], scores_tensor[0]
 
     def fgsm_attack(self, image: np.ndarray, epsilon: float, loss_type: str):
         """
@@ -327,7 +327,7 @@ class SAMAttacker:
 
         # 计算损失
         # 这里为什么要unsequeeze? 匹配Loss函数的期望输入维度
-        loss = self.get_loss(logits.unsqueeze(0), scores, loss_type)
+        loss = self.get_loss(logits.unsqueeze(0), scores_tensor, loss_type)
 
         # 反向传播
         loss.backward()
