@@ -234,27 +234,83 @@ class SAMAttacker:
         """
         从tensor预测并返回可微分的结果
         这是FGSM/PGD攻击的核心 - 需要梯度流动
+        直接使用sam来保持梯度
         """
-        # 转为numpy用于sam
-        image_np = self.tensor_to_image(image_tensor)
+        # image_tensor shape: [3, H, W], 值范围 [0, 1]
 
-        # 设置图像
-        self.predictor.set_image(image_np)
-
-        # 预测
-        masks, scores, logits = self.predictor.predict(
-            point_coords=self.config.point_coords,
-            point_labels=np.array([self.config.point_label]),
-            multimask_output=False,
+        # SAM需要的预处理
+        # 1. 调整到SAM的输入大小 (1024x1024)
+        img_size = self.sam.image_encoder.img_size
+        image_resized = F.interpolate(
+            image_tensor.unsqueeze(0),
+            size=(img_size, img_size),
+            mode="bilinear",
+            align_corners=False,
         )
 
-        # 转换tensor用于计算
-        logits_tensor = torch.from_numpy(logits[0]).float().to(self.device)
-        scores_tensor = torch.tensor(
-            [scores[0]], device=self.device, dtype=torch.float32
+        # 2.归一化
+        pixel_mean = (
+            torch.tensor([123.675, 116.28, 103.53], device=self.device).view(1, 3, 1, 1)
+            / 255
+        )
+        pixel_std = (
+            torch.tensor([58.395, 57.12, 57.375], device=self.device).view(1, 3, 1, 1)
+            / 255
+        )
+        image_normalized = (image_resized - pixel_mean) / pixel_std
+
+        #  3. 通过图像编码器
+        with torch.set_grad_enabled(True):
+            image_embedding = self.sam.image_encoder(image_normalized)
+
+        # 4. 准备prompt
+        # 将point坐标转换为SAM的输入格式
+        coords = torch.tensor(
+            self.config.point_coords, device=self.device, dtype=torch.float32
+        )
+        labels = torch.tensor(
+            [self.config.point_label], device=self.device, dtype=torch.float32
         )
 
-        return masks[0], scores[0], logits_tensor, scores_tensor
+        # 缩放坐标到1024x1024
+        h, w = image_tensor.shape[1], image_tensor.shape[2]
+        coords_scaled = coords.clone()
+        coords_scaled[..., 0] = coords[..., 0] * (img_size / w)
+        coords_scaled[..., 1] = coords[..., 1] * (img_size / h)
+
+        # 5. 通过prompt编码器和mask解码器
+        with torch.set_grad_enabled(True):
+            sparse_embeddings, dense_embeddings = self.sam.prompt_encoder(
+                points=(coords_scaled.unsqueeze(0), labels.unsqueeze(0)),
+                boxes=None,
+                masks=None,
+            )
+
+            low_res_masks, iou_predictions = self.sam.mask_decoder(
+                image_embeddings=image_embedding,
+                image_pe=self.sam.prompt_encoder.get_dense_pe(),
+                sparse_prompt_embeddings=sparse_embeddings,
+                dense_prompt_embeddings=dense_embeddings,
+                multimask_output=False,
+            )
+
+        # 6. 上采样到原始大小
+        masks_upscaled = F.interpolate(
+            low_res_masks, size=(h, w), mode="bilinear", align_corners=False
+        )
+
+        # 返回可微分的结果
+        logits_tensor = masks_upscaled.squeeze(0)  # [1, H, W]
+        scores_tensor = iou_predictions.squeeze(0)  # [1]
+
+        # 同时返回numpy版本（用于显示）
+        with torch.no_grad():
+            masks_np = (
+                (masks_upscaled.squeeze(0).sigmoid() > 0.5).cpu().numpy().astype(bool)
+            )
+            scores_np = iou_predictions.squeeze(0).cpu().numpy()
+
+        return masks_np[0], scores_np[0], logits_tensor[0], scores_tensor
 
     def fgsm_attack(self, image: np.ndarray, epsilon: float, loss_type: str):
         """
