@@ -227,7 +227,6 @@ ASR = (攻击成功样本数 / 总样本数) × 100%
 
 ## 文件结构
 
-```
 SAM-Tutorial/
 ├── README.md                          # 本文档
 ├── requirements.txt                   # 依赖包
@@ -238,25 +237,18 @@ SAM-Tutorial/
 │   ├── sam_tutorial.py               # SAM使用教程
 │   └── sam_interactive.py            # 交互式工具
 │
-├── attacks/                           # 攻击代码
-│   ├── fgsm_attack.py                # FGSM实现
-│   ├── pgd_attack.py                 # PGD实现
-│   ├── loss_functions.py             # 4种损失函数
-│   └── attack_utils.py               # 工具函数
-│
 ├── experiments/                       # 实验脚本
-│   ├── run_experiments.py            # 完整实验流程
-│   ├── evaluate.py                   # 评估指标计算
-│   └── visualize.py                  # 结果可视化
+│   └── run_adversarial_attacks.py    # 完整的对抗攻击实验
 │
-├── results/                           # 实验结果
-│   ├── figures/                      # 可视化图片
-│   ├── logs/                         # 实验日志
-│   └── report.md                     # 实验报告
-│
-└── notebooks/                         # Jupyter notebooks（可选）
-    └── analysis.ipynb                # 交互式分析
-```
+└── results/                           # 实验结果（自动生成）
+    ├── figures/                      # 可视化图片
+    │   ├── baseline.png              # baseline结果
+    │   ├── fgsm_*.png                # FGSM攻击结果
+    │   ├── pgd_*.png                 # PGD攻击结果
+    │   └── comparison_analysis.png   # 对比分析
+    └── logs/                         # 实验日志
+        ├── results.csv               # 结果表格
+        └── results.json              # 详细结果
 
 ---
 
@@ -296,7 +288,7 @@ SAM-Tutorial/
 
 ---
 SAM权重:ViT-L 
-wget https://dl.fbaipublicfiles.com/segment_anything/sam_vit_l_0b3195.pth
+下载命令:wget https://dl.fbaipublicfiles.com/segment_anything/sam_vit_l_0b3195.pth
 
 ## 联系方式
 
